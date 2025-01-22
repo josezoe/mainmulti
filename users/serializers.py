@@ -1,62 +1,81 @@
 from rest_framework import serializers
-from .models import CustomUser, Vendor, Country, State, City, Timezone
+from django.contrib.auth.models import Permission
+from .models import CustomUser, Vendor, Country, State, City, Timezone, AppModule, Role, UserRole, AppModulePermission
+
+class PermissionSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Permission
+        fields = ['id', 'name', 'codename']
+
+class AppModuleSerializer(serializers.ModelSerializer):
+    permissions = PermissionSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = AppModule
+        fields = ['id', 'name', 'app_label', 'is_full_app', 'permissions']
+
+class RoleSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Role
+        fields = ['id', 'name', 'description', 'vendor']
+
+class UserRoleSerializer(serializers.ModelSerializer):
+    user = serializers.StringRelatedField()  # Assuming you want to display username
+    role = serializers.StringRelatedField()  # Assuming you want to display role name
+    vendor = serializers.StringRelatedField()  # Assuming you want to display vendor name
+
+    class Meta:
+        model = UserRole
+        fields = ['id', 'user', 'role', 'vendor']
+
+class CustomUserSerializer(serializers.ModelSerializer):
+    roles = UserRoleSerializer(many=True, read_only=True)
+    user_type = serializers.CharField(source='get_user_type_display')
+
+    class Meta:
+        model = CustomUser
+        fields = ['id', 'username', 'email', 'phone', 'country', 'state', 'city', 'profile_image', 'preferred_currency', 'preferred_timezone', 'age', 'gender', 'postal_code', 'housing_status', 'income_level', 'user_type', 'roles']
+
+    def to_representation(self, instance):
+        ret = super().to_representation(instance)
+        # If you want to include specific permissions for this user:
+        ret['permissions'] = [p.codename for p in instance.user_permissions.all()]
+        return ret
+
+class VendorSerializer(CustomUserSerializer):
+    class Meta:
+        model = Vendor
+        fields = CustomUserSerializer.Meta.fields + ['company_name', 'tax_id', 'contact_person_name', 'phone_number', 'business_email', 'website', 'address_line1', 'address_line2', 'direction', 'menu', 'cuisine_type', 'cuisines', 'opening_hours', 'description', 'about', 'facilities', 'atmosphere', 'spoken_languages', 'payment_options', 'special_conditions', 'is_vendor_superuser']
+    
+    def to_representation(self, instance):
+        ret = super().to_representation(instance)
+        # Add any vendor-specific custom logic here if needed
+        return ret
 
 class CountrySerializer(serializers.ModelSerializer):
     class Meta:
         model = Country
-        fields = '__all__'
-
-class TimezoneSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = Timezone
-        fields = '__all__'
+        fields = ['id', 'name', 'currency', 'default_timezone']
 
 class StateSerializer(serializers.ModelSerializer):
     class Meta:
         model = State
-        fields = '__all__'
+        fields = ['id', 'name', 'country', 'timezone']
 
 class CitySerializer(serializers.ModelSerializer):
     class Meta:
         model = City
-        fields = '__all__'
+        fields = ['id', 'name', 'state']
 
-
-class CustomUserSerializer(serializers.ModelSerializer):
-    country = CountrySerializer(read_only=True)
-    state = StateSerializer(read_only=True)
-    city = CitySerializer(read_only=True)
-    preferred_timezone = TimezoneSerializer(read_only=True)
+class TimezoneSerializer(serializers.ModelSerializer):
     class Meta:
-        model = CustomUser
-        fields = [
-            'id', 'username', 'email', 'first_name', 'last_name', 'user_type',
-             'unique_id', 'phone', 'country', 'state', 'city', 'profile_image',
-            'preferred_currency', 'preferred_timezone', 'age', 'gender',
-            'income_level', 'housing_status', 'postal_code',
-            'geolocation', 'last_page_visited', 'visit_count', 'last_visit',
-            'search_history', 'purchase_history', 'last_purchase_date',
-            'purchase_count', 'total_spent', 'segment', 'lifestyle',
-            'interests', 'marketing_preferences', 'behavior_tags',
-            'date_joined'
-        ]
+        model = Timezone
+        fields = ['id', 'name']
 
-class VendorSerializer(serializers.ModelSerializer):
-    country = CountrySerializer(read_only=True)
-    state = StateSerializer(read_only=True)
-    city = CitySerializer(read_only=True)
-    preferred_timezone = TimezoneSerializer(read_only=True)
+class AppModulePermissionSerializer(serializers.ModelSerializer):
+    module = AppModuleSerializer(read_only=True)
+    permission = PermissionSerializer(read_only=True)
+
     class Meta:
-        model = Vendor
-        fields = [
-            'id', 'username', 'email', 'first_name', 'last_name', 
-            'user_type', 'company_name', 'tax_id', 'slug', 'vendor_unique_id',
-            'contact_person_name', 'phone_number', 'business_email', 'website',
-            'address_line1', 'address_line2', 'direction', 'menu',
-            'cuisine_type', 'cuisines', 'opening_hours', 'description',
-            'about', 'facilities', 'atmosphere', 'spoken_languages',
-            'payment_options', 'special_conditions', 'average_rating',
-            'review_count', 'created_at', 'updated_at', 'is_vendor_superuser',
-            'country', 'state', 'city', 'preferred_timezone', 'profile_image', 'is_active', 'phone',
-            'date_joined', 'income_level', 'gender', 'housing_status', 'postal_code'
-        ]
+        model = AppModulePermission
+        fields = ['id', 'module', 'permission']

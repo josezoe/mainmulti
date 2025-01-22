@@ -1,6 +1,6 @@
-
 from django.contrib import admin
 from django.contrib.auth.models import Group
+from django.contrib.auth.models import Permission
 from .models import (
     Product,
     Table,
@@ -26,8 +26,9 @@ from .models import (
     PriceTier,
     AddOn,
     MenuItemPriceTier,
-    Role,
-    RolePermission
+  
+    AppModule,
+    Notification
 )
 
 # Admin site header modification
@@ -52,14 +53,12 @@ class MenuAdmin(admin.ModelAdmin):
     search_fields = ('name','vendor__establishment_name')
     prepopulated_fields = {'slug': ('name',)}
 
-
 @admin.register(MenuItem)
 class MenuItemAdmin(admin.ModelAdmin):
     list_display = ('name', 'menu', 'price', 'is_available', 'category')
     list_filter = ('menu', 'is_available', 'category')
     search_fields = ('name', 'description','category')
     prepopulated_fields = {'slug': ('name',)}
-
 
 @admin.register(Cart)
 class CartAdmin(admin.ModelAdmin):
@@ -85,7 +84,6 @@ class OrderItemAdmin(admin.ModelAdmin):
     list_filter = ('order','menu_item')
     search_fields = ('order__id','menu_item__name')
 
-
 @admin.register(Tip)
 class TipAdmin(admin.ModelAdmin):
     list_display = ('order', 'amount', 'waiter', 'tip_time')
@@ -97,10 +95,9 @@ class DiscountAdmin(admin.ModelAdmin):
     list_display = ('order', 'amount', 'reason')
     search_fields = ('order__id','reason')
 
-
 @admin.register(Payment)
 class PaymentAdmin(admin.ModelAdmin):
-    list_display = ('order', 'get_method_display_text', 'amount','payment_status', 'get_payment_time')
+    list_display = ('order', 'get_method_display_text', 'amount', 'payment_status', 'get_payment_time')
     list_filter = ('payment_status',)
     search_fields = ('order__id', )
 
@@ -111,19 +108,21 @@ class PaymentAdmin(admin.ModelAdmin):
         return obj.get_payment_time()
 
 
+# ... (previous code)
+
+
+
 @admin.register(StaffReport)
 class StaffReportAdmin(admin.ModelAdmin):
     list_display = ('waiter', 'start_time', 'end_time', 'total_sales')
     list_filter = ('start_time', 'end_time')
     search_fields = ('waiter__username',)
 
-
 @admin.register(ServerSwap)
 class ServerSwapAdmin(admin.ModelAdmin):
     list_display = ('original_waiter', 'new_waiter', 'table', 'order', 'swap_time')
     list_filter = ('swap_time', )
     search_fields = ('original_waiter__username', 'new_waiter__username')
-
 
 @admin.register(Promotion)
 class PromotionAdmin(admin.ModelAdmin):
@@ -137,13 +136,11 @@ class IncentiveAdmin(admin.ModelAdmin):
     list_filter = ('is_active', 'date_given')
     search_fields = ('waiter__username', 'reason')
 
-
 @admin.register(Badge)
 class BadgeAdmin(admin.ModelAdmin):
     list_display = ('name', 'badge_type', 'criteria', 'expiration_period')
     list_filter = ('badge_type',)
     search_fields = ('name', 'description','badge_type')
-
 
 @admin.register(WaiterBadge)
 class WaiterBadgeAdmin(admin.ModelAdmin):
@@ -151,12 +148,10 @@ class WaiterBadgeAdmin(admin.ModelAdmin):
     list_filter = ('date_awarded','expiration_date')
     search_fields = ('waiter__username','badge__name')
 
-
 @admin.register(Tax)
 class TaxAdmin(admin.ModelAdmin):
     list_display = ('order', 'name', 'amount', 'is_percentage')
     search_fields = ('order__id','name')
-
 
 @admin.register(Review)
 class ReviewAdmin(admin.ModelAdmin):
@@ -170,12 +165,10 @@ class TakeoutAdmin(admin.ModelAdmin):
     list_filter = ('is_picked_up', 'delivery_option')
     search_fields = ('order__id', )
 
-
 @admin.register(MenuItemImage)
 class MenuItemImageAdmin(admin.ModelAdmin):
     list_display = ('menu_item', 'image', 'description')
     search_fields = ('menu_item__name','description')
-
 
 @admin.register(PriceTier)
 class PriceTierAdmin(admin.ModelAdmin):
@@ -193,16 +186,26 @@ class MenuItemPriceTierAdmin(admin.ModelAdmin):
     list_filter = ('tier',)
     search_fields = ('menu_item__name','tier__name')
 
-@admin.register(Role)
-class RoleAdmin(admin.ModelAdmin):
-    list_display = ('name', 'description', 'vendor')
-    search_fields = ('name','description','vendor__establishment_name')
 
 
-@admin.register(RolePermission)
-class RolePermissionAdmin(admin.ModelAdmin):
-    list_display = ('role', 'permission')
-    list_filter = ('role','permission')
 
-# Unregister the default Group model to avoid confusion
+
+
+
+# Unregister the default Group model if you don't need it
 admin.site.unregister(Group)
+
+# Optionally, register Notification if it has admin-specific configurations
+from django.contrib import admin
+from .models import Notification  # Assuming Notification is in the same directory
+
+@admin.register(Notification)
+class NotificationAdmin(admin.ModelAdmin):
+    def notification_type(self, obj):
+        return obj.get_notification_type_display()
+    
+    notification_type.short_description = 'Notification Type'
+
+    list_display = ('user', 'message', 'notification_type', 'created_at')
+    list_filter = ('created_at',)  # Use a tuple with a trailing comma for a single item
+    search_fields = ('user__username', 'message')

@@ -5,8 +5,11 @@ from django.db.models import JSONField
 import uuid
 from django.utils.text import slugify
 from django.contrib.auth.models import Permission
-from django.db.models.signals import post_save 
-from django.dispatch import receiver
+from django.conf import settings
+import os
+import csv
+from ipware import get_client_ip
+from shared.geodata import get_city_data
 
 # Constants for choices
 GENDER_CHOICES = (
@@ -33,12 +36,6 @@ DEVICE_TYPE_CHOICES = (
     ('Mobile', 'Mobile Device'),
     ('Desktop', 'Desktop'),
     ('Tablet', 'Tablet'),
-)
-
-INCOME_CHOICES = (
-    ('Low', '< $25,000'),
-    ('Medium', '$25,000 - $75,000'),
-    ('High', '> $75,000'),
 )
 
 HOUSING_CHOICES = (
@@ -93,6 +90,37 @@ class Currency(models.Model):
     
     def __str__(self):
         return self.code
+    
+class HousingChoice(models.Model):
+    country = models.ForeignKey(Country, on_delete=models.CASCADE)
+    name = models.CharField(max_length=50)
+    description = models.TextField()
+    
+    def __str__(self):
+        return f"{self.name} in {self.country.name}"
+
+class HousingCost(models.Model):
+    housing_choice = models.ForeignKey(HousingChoice, on_delete=models.CASCADE)
+    currency = models.ForeignKey(Currency, on_delete=models.CASCADE)
+    average_cost = models.DecimalField(max_digits=15, decimal_places=2, null=True, blank=True)
+    cost_range_min = models.DecimalField(max_digits=15, decimal_places=2, null=True, blank=True)
+    cost_range_max = models.DecimalField(max_digits=15, decimal_places=2, null=True, blank=True)
+    
+    def __str__(self):
+        return f"{self.housing_choice.name} cost in {self.currency.code}"
+    
+class IncomeChoice(models.Model):
+    country = models.ForeignKey(Country, on_delete=models.CASCADE)
+    currency = models.ForeignKey(Currency, on_delete=models.CASCADE)
+    name = models.CharField(max_length=50)
+    min_threshold = models.DecimalField(max_digits=15, decimal_places=2, null=True, blank=True)
+    max_threshold = models.DecimalField(max_digits=15, decimal_places=2, null=True, blank=True)
+    
+    def __str__(self):
+        return f"{self.name} in {self.currency.code} ({self.country.name})"
+
+    class Meta:
+        unique_together = ('country', 'currency', 'name')
 
 class CustomUserManager(BaseUserManager):
     def create_user(self, username, password=None, **extra_fields):
@@ -121,22 +149,22 @@ class CustomUser(AbstractUser):
     state = models.ForeignKey(State, on_delete=models.SET_NULL, null=True, blank=True)
     city = models.ForeignKey(City, on_delete=models.SET_NULL, null=True, blank=True)
     profile_image = models.ImageField(upload_to='profile_images/', null=True, blank=True)
-    preferred_currency = models.CharField(max_length=3, null=True, blank=True)
+    preferred_currency = models.ForeignKey(Currency, on_delete=models.SET_NULL, null=True, blank=True)
     preferred_timezone = models.ForeignKey(Timezone, on_delete=models.SET_NULL, null=True, blank=True)
     age = models.IntegerField(null=True, blank=True)
     gender = models.CharField(max_length=10, choices=GENDER_CHOICES, null=True, blank=True)
-    income_level = models.CharField(max_length=20, choices=INCOME_CHOICES, null=True, blank=True)
-    housing_status = models.CharField(max_length=50, choices=HOUSING_CHOICES, null=True, blank=True)
     postal_code = models.CharField(max_length=20, null=True, blank=True)
+    housing_status = models.ForeignKey(HousingChoice, on_delete=models.SET_NULL, null=True, blank=True)
+    income_level = models.ForeignKey(IncomeChoice, on_delete=models.SET_NULL, null=True, blank=True)
 
-    # Geo-Targeting
+    # Geo-Targeting - Added IP tracking
+    last_known_ip = models.GenericIPAddressField(null=True, blank=True)
     geolocation = models.JSONField(null=True, blank=True) # For last known location
 
     # Behavioral Analytics
     last_page_visited = models.URLField(null=True, blank=True)
     visit_count = models.IntegerField(default=0)
     last_visit = models.DateTimeField(null=True, blank=True)
-    search_history = models.JSONField(null=True, blank=True)
     purchase_history = models.JSONField(null=True, blank=True)
 
     # RFM Metrics for Segmentation
@@ -148,9 +176,8 @@ class CustomUser(AbstractUser):
     segment = models.CharField(max_length=100, null=True, blank=True, 
                                help_text="User segment, e.g., 'Champions', 'New Customers'")
 
-    # Psychographic Segmentation
+    # Psychographic Segmentation - Denormalized for performance
     lifestyle = models.CharField(max_length=50, choices=LIFESTYLE_CHOICES, null=True, blank=True)
-    interests = models.JSONField(null=True, blank=True)  # List of interests
 
     # Additional fields for targeting and analysis
     marketing_preferences = models.JSONField(null=True, blank=True)# Store preferences for marketing campaigns
@@ -158,126 +185,61 @@ class CustomUser(AbstractUser):
     
     objects = CustomUserManager()
 
+    def update_geo_info(self, ip):
+        """
+        Update user's currency and timezone based on their IP address using CSV data.
+        """
+        try:
+            geoname_id = self.get_geoname_id_from_ip(ip)  # You need to implement this method
+            city_info = get_city_data(geoname_id)
+            
+            if city_info:
+                country_code = city_info.get('country_iso_code')
+                timezone_name = city_info.get('time_zone')
+                
+                if country_code:
+                    country, created = Country.objects.get_or_create(code=country_code)
+                    currency, created = Currency.objects.get_or_create(code=country.currency)
+                    self.preferred_currency = currency
+                
+                if timezone_name:
+                    timezone_obj, created = Timezone.objects.get_or_create(name=timezone_name)
+                    self.preferred_timezone = timezone_obj
+                
+                self.last_known_ip = ip
+                self.save()
+                return True
+            else:
+                print(f"No location data found for IP: {ip}")
+                return False
+        except Exception as e:
+            print(f"Error updating geo info: {e}")
+            return False
+
     def save(self, *args, **kwargs):
-        if self.user_type == 'vendor':
-            vendor_group, created = Group.objects.get_or_create(name='vendor')
-            self.groups.add(vendor_group)
+        if self.last_known_ip and self.last_known_ip != self.get_client_ip():
+            self.update_geo_info(self.get_client_ip())
         super().save(*args, **kwargs)
 
-    def update_purchase(self, amount):
-        # Update RFM metrics
-        self.last_purchase_date = timezone.now()
-        self.purchase_count += 1
-        self.total_spent += amount
-        self.save()
+    def get_client_ip(self):
+        # Implement this method to fetch the current client's IP address
+        from ipware import get_client_ip
+        ip, _ = get_client_ip(self.request)  # 'self.request' needs to be set in your views or middleware
+        return ip
 
-    def calculate_rfm_score(self):
-        # Simplified RFM scoring
-        now = timezone.now()
-        recency_score = 5 - min((now - self.last_purchase_date).days // 30, 4) if self.last_purchase_date else 0
-        frequency_score = min(self.purchase_count // 5, 5)
-        monetary_score = min(int(self.total_spent // 100), 5)
-        return {
-            'recency': recency_score,
-            'frequency': frequency_score,
-            'monetary': monetary_score,
-            'total_score': recency_score + frequency_score + monetary_score
-        }
+    def get_geoname_id_from_ip(self, ip):
+        blocks_csv_path = os.path.join(settings.BASE_DIR, 'shared', 'Geocity', 'blocks.csv')  # Assuming you have this CSV
+        with open(blocks_csv_path, 'r', encoding='utf-8') as csvfile:
+            reader = csv.DictReader(csvfile)
+            for row in reader:
+                if self.ip_in_range(ip, row['network']):
+                    return row['geoname_id']
+        return None
 
-    def get_segment(self):
-        rfm_score = self.calculate_rfm_score()
-        total = rfm_score['total_score']
-        
-        if total > 12:
-            return "Champions"
-        elif 9 <= total <= 12:
-            return "Loyal Customers"
-        elif 6 <= total < 9:
-            return "Potential Loyalists"
-        elif 3 <= total < 6:
-            return "New Customers"
-        else:
-            return "At Risk"
+    def ip_in_range(self, ip, network):
+        import ipaddress
+        return ipaddress.ip_address(ip) in ipaddress.ip_network(network)
 
-    def update_behavior_tag(self, tag):
-        if not self.behavior_tags:
-            self.behavior_tags = {'tags': []}
-        if tag not in self.behavior_tags['tags']:
-            self.behavior_tags['tags'].append(tag)
-        self.save()
-
-    def calculate_clv(self):
-        # Simplified CLV calculation
-        return self.total_spent * (1 + self.purchase_count)  # Assuming more purchases increase value
-
-    def estimate_income_by_housing(self):
-        housing_to_income = {
-            'Owns House': 'High',
-            'Owns Apartment': 'Medium',
-            'Rents': 'Low',
-            'Other': 'Medium',
-        }
-        return housing_to_income.get(self.housing_status, 'Unknown')
-
-    def analyze_purchase_patterns(self):
-        if not self.purchase_history:
-            return 'Unknown'
-        
-        luxury_count = sum(1 for item in self.purchase_history if item.get('price', 0) > 1000)  # Example threshold
-        discount_use = sum(1 for item in self.purchase_history if item.get('used_coupon', False))
-        
-        if luxury_count > 5:  # Arbitrary threshold for 'high income' behavior
-            return 'High'
-        elif discount_use > 20:  # Arbitrary threshold for 'low income' behavior
-            return 'Low'
-        else:
-            return 'Medium'
-
-    def estimate_income_by_lifestyle(self):
-        lifestyle_income_indicators = {
-            'Travel': {'luxury_travel': 'High', 'budget_travel': 'Medium'},
-            'Sports': {'golf': 'High', 'running': 'Medium'},
-        }
-        
-        if not self.interests:
-            return 'Medium'
-        
-        income_level = 'Medium'  # Default to medium
-        for interest, details in self.interests.items():
-            for activity in lifestyle_income_indicators.get(interest, {}).keys():
-                if activity in details.get('types', []):
-                    if lifestyle_income_indicators[interest][activity] == 'High':
-                        return 'High'
-                    elif lifestyle_income_indicators[interest][activity] == 'Low':
-                        return 'Low'
-        return income_level
-
-    def predict_income(self):
-        # Simple voting system for income prediction
-        housing_income = self.estimate_income_by_housing()
-        purchase_income = self.analyze_purchase_patterns()
-        lifestyle_income = self.estimate_income_by_lifestyle()
-
-        # Count votes for each income level
-        votes = {
-            'Low': 0,
-            'Medium': 0,
-            'High': 0,
-            'Unknown': 0
-        }
-        
-        for income in [housing_income, purchase_income, lifestyle_income]:
-            if income in votes:
-                votes[income] += 1
-
-        # Determine the income level with the most votes
-        predicted_income = max(votes, key=votes.get)
-        
-        # If there's a tie or if 'Unknown' has the highest vote, revert to a default or previous known income
-        if votes[predicted_income] == 0 or (predicted_income == 'Unknown' and votes['Unknown'] == max(votes.values())):
-            predicted_income = self.income_level or 'Medium'  # Use existing income_level if available, else default to 'Medium'
-        
-        return predicted_income
 
 class UserDevice(models.Model):
     user = models.ForeignKey(CustomUser, on_delete=models.CASCADE)
@@ -324,8 +286,8 @@ class Vendor(CustomUser):
     company_name = models.CharField(max_length=100)
     tax_id = models.CharField(max_length=20, null=True, blank=True)
     slug = models.SlugField(unique=True, blank=True, null=True)
-    vendor_unique_id = models.UUIDField(default=uuid.uuid4, editable=False, unique=True)
-
+    can_manage_roles = models.BooleanField(default=False, help_text="Can manage roles for this vendor")
+    is_vendor_superuser = models.BooleanField(default=False)
     # Contact Information
     contact_person_name = models.CharField(max_length=100, null=True, blank=True)
     phone_number = models.CharField(max_length=20, null=True, blank=True)
@@ -362,9 +324,6 @@ class Vendor(CustomUser):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
-    # Flag to indicate this user is a superuser for their own vendor operations
-    is_vendor_superuser = models.BooleanField(default=False, help_text="Designates whether the user is a superuser for their vendor.")
-    
     objects = VendorManager()
 
     def save(self, *args, **kwargs):
@@ -377,53 +336,49 @@ class Vendor(CustomUser):
     
     def get_establishment_slug(self):
         return slugify(self.company_name)
-    
-    def has_perm(self, perm, obj=None):
-        # Vendor superusers have all permissions related to their vendor's apps
-        if perm.startswith('waiter_management.') or perm.startswith('vendor.'):
-            return self.is_vendor_superuser
-        return super().has_perm(perm, obj)
 
-    def has_module_perms(self, app_label):
-        # Vendor superusers have all permissions in waiter_management and vendor apps
-        if app_label in ['waiter_management', 'vendor']:
-            return self.is_vendor_superuser
-        return super().has_module_perms(app_label)
-
-    def update_purchase(self, amount):
-        # Update RFM metrics
-        self.last_purchase_date = timezone.now()
-        self.purchase_count += 1
-        self.total_spent += amount
-        self.save()
-
-
-class RoleManager(models.Model):
-    user = models.OneToOneField(CustomUser, on_delete=models.CASCADE, related_name='role_manager')
-    can_add_roles = models.BooleanField(default=False)
-    can_edit_roles = models.BooleanField(default=False)
-    can_delete_roles = models.BooleanField(default=False)
+class AppModule(models.Model):
+    name = models.CharField(max_length=100, unique=True)
+    app_label = models.CharField(max_length=100)
+    is_full_app = models.BooleanField(default=False)
 
     def __str__(self):
-        return f"Role Manager for {self.user.username}"
+        return self.name
+
+class AppModulePermission(models.Model):
+    module = models.ForeignKey(AppModule, on_delete=models.CASCADE, related_name='permissions')
+    permission = models.ForeignKey(Permission, on_delete=models.CASCADE)
+
+    def __str__(self):
+        return f"{self.module.name} - {self.permission.name}"
+
+class Role(models.Model):
+    name = models.CharField(max_length=100, unique=True)
+    description = models.TextField(blank=True)
+    vendor = models.ForeignKey(Vendor, on_delete=models.CASCADE, related_name='roles')
+
+    def __str__(self):
+        return self.name
+
+class RolePermission(models.Model):
+    role = models.ForeignKey(Role, on_delete=models.CASCADE)
+    permission = models.ForeignKey(Permission, on_delete=models.CASCADE)
+
+    def __str__(self):
+        return f"{self.role.name} - {self.permission.name}"
+
+class UserRole(models.Model):
+    user = models.ForeignKey(CustomUser, on_delete=models.CASCADE)
+    role = models.ForeignKey(Role, on_delete=models.CASCADE)
+    vendor = models.ForeignKey(Vendor, on_delete=models.CASCADE, related_name='user_roles')
 
     class Meta:
-        verbose_name = "Role Manager"
-        verbose_name_plural = "Role Managers"
+        unique_together = ('user', 'role', 'vendor')  # One role per user per vendor
 
-# Signal functions for RoleManager
-@receiver(post_save, sender=CustomUser)
-def create_role_manager(sender, instance, created, **kwargs):
-    if created and instance.user_type == 'vendor':
-        RoleManager.objects.create(user=instance, can_add_roles=True)
+    def __str__(self):
+        return f"{self.user.username} - {self.role.name} at {self.vendor.company_name}"
 
-@receiver(post_save, sender=CustomUser)
-def save_role_manager(sender, instance, **kwargs):
-    if hasattr(instance, 'role_manager'):
-        instance.role_manager.save()
-
-
-#compliance 
+# Privacy and compliance models
 
 class UserPrivacySettings(models.Model):
     user = models.OneToOneField(CustomUser, on_delete=models.CASCADE)
@@ -449,15 +404,31 @@ class GDPRCompliance(models.Model):
     has_erase_right = models.BooleanField(default=False)
     has_portability_right = models.BooleanField(default=False)
 
-class UserConsent(models.Model):
-    user = models.ForeignKey(CustomUser, on_delete=models.CASCADE)
-    consent_type = models.ForeignKey('ConsentType', on_delete=models.CASCADE)
-    consented = models.BooleanField(default=False)
-    date_consented = models.DateTimeField(null=True, blank=True)
-    date_withdrawn = models.DateTimeField(null=True, blank=True)
-
 class ConsentType(models.Model):
     name = models.CharField(max_length=100, unique=True)
     description = models.TextField(null=True, blank=True)
 
+    def __str__(self):
+        return self.name
 
+class UserConsent(models.Model):
+    user = models.ForeignKey(CustomUser, on_delete=models.CASCADE)
+    consent_type = models.ForeignKey(ConsentType, on_delete=models.CASCADE)
+    consented = models.BooleanField(default=False)
+    date_consented = models.DateTimeField(null=True, blank=True)
+    date_withdrawn = models.DateTimeField(null=True, blank=True)
+
+    def __str__(self):
+        return f"{self.user.username} - {self.consent_type.name} - {'Consented' if self.consented else 'Not Consented'}"
+
+# Helper function for location-based compliance
+def get_user_location(request):
+    """Get user's location based on IP address."""
+    ip, _ = get_client_ip(request)
+    if ip:
+        # Note: You'll need to implement or integrate a GeoIP service here
+        # Example:
+        # from django.contrib.gis.geoip2 import GeoIP2
+        # g = GeoIP2()
+        # return g.city(ip)
+        return {'country'}

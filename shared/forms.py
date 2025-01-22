@@ -23,6 +23,11 @@ from .models import (
     Role
 )
 
+from django.contrib.auth.models import Permission
+from .models import AppModule
+
+
+
 # Product Form
 class ProductForm(forms.ModelForm):
     class Meta:
@@ -104,11 +109,11 @@ class DiscountForm(forms.ModelForm):
 class PaymentForm(forms.ModelForm):
     class Meta:
         model = Payment
-        fields = ['method','amount', 'payment_method']
-        widgets = {
-           'method': forms.Select(choices=Payment.PAYMENT_METHODS),
-        }
-
+        fields = ['method', 'amount', 'payment_status']  # Include fields you want in the form
+    widgets = {
+        'method': forms.Select(choices=Payment.PAYMENT_METHODS),
+        'payment_status': forms.Select(choices=Payment._meta.get_field('payment_status').choices),
+    }
 # StaffReport Form
 class StaffReportForm(forms.ModelForm):
     class Meta:
@@ -181,3 +186,32 @@ class RoleForm(forms.ModelForm):
     class Meta:
         model = Role
         fields = ['name', 'description', 'vendor']
+
+
+
+
+
+class AppModuleForm(forms.ModelForm):
+    class Meta:
+        model = AppModule
+        fields = ['name', 'app_label', 'description', 'is_full_app']
+        widgets = {
+            'description': forms.Textarea(attrs={'rows': 4}),
+        }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        if self.instance and self.instance.is_full_app:
+            self.fields['permissions'].widget.attrs['disabled'] = True
+        else:
+            self.fields['permissions'].queryset = Permission.objects.filter(content_type__app_label=self.cleaned_data.get('app_label'))
+
+class AppModulePermissionForm(forms.Form):
+    permission = forms.ModelChoiceField(queryset=Permission.objects.none(), required=False)
+    assigned = forms.BooleanField(required=False, label='Include in Module')
+
+    def __init__(self, *args, **kwargs):
+        app_label = kwargs.pop('app_label', None)
+        super().__init__(*args, **kwargs)
+        if app_label:
+            self.fields['permission'].queryset = Permission.objects.filter(content_type__app_label=app_label)

@@ -27,6 +27,13 @@ from .models import (
     Role,
     RolePermission
 )
+from .models import AppModule, Permission
+from django.contrib.auth.models import Permission
+
+
+
+
+
 
 class ProductSerializer(serializers.ModelSerializer):
     class Meta:
@@ -158,3 +165,43 @@ class RolePermissionSerializer(serializers.ModelSerializer):
     class Meta:
         model = RolePermission
         fields = '__all__'
+
+class PermissionSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Permission
+        fields = ['id', 'name', 'codename', 'content_type']
+
+class AppModuleSerializer(serializers.ModelSerializer):
+    # Serialize all permissions associated with this module
+    permissions = PermissionSerializer(many=True, read_only=True)
+    
+    class Meta:
+        model = AppModule
+        fields = ['id', 'name', 'app_label', 'description', 'is_full_app', 'permissions']
+        
+    def create(self, validated_data):
+        permissions_data = validated_data.pop('permissions', [])
+        app_module = AppModule.objects.create(**validated_data)
+        
+        # If permissions are provided, add them to the module
+        for perm_data in permissions_data:
+            permission = Permission.objects.get(pk=perm_data['id'])
+            app_module.permissions.add(permission)
+        
+        return app_module
+
+    def update(self, instance, validated_data):
+        instance.name = validated_data.get('name', instance.name)
+        instance.app_label = validated_data.get('app_label', instance.app_label)
+        instance.description = validated_data.get('description', instance.description)
+        instance.is_full_app = validated_data.get('is_full_app', instance.is_full_app)
+        
+        # Handle permissions update
+        if 'permissions' in validated_data:
+            instance.permissions.clear()
+            for perm_data in validated_data['permissions']:
+                permission = Permission.objects.get(pk=perm_data['id'])
+                instance.permissions.add(permission)
+        
+        instance.save()
+        return instance

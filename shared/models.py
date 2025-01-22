@@ -5,6 +5,7 @@ from django.utils import timezone
 from django.contrib.auth.models import AbstractUser
 from users.models import Vendor, CustomUser as User
 from django.contrib.auth.models import Permission
+import random
 
 
 class Product(models.Model):
@@ -379,7 +380,7 @@ class Payment(models.Model):
         ('ONLINE', 'Online Payment'),
     ]
     order = models.OneToOneField(Order, on_delete=models.CASCADE, related_name='payment')
-    method = models.CharField(max_length=20, choices=PAYMENT_METHODS)
+    method = models.CharField(max_length=20, choices=PAYMENT_METHODS,default='credit_card')
     amount = models.DecimalField(max_digits=10, decimal_places=2)
     transaction_id = models.CharField(max_length=50, null=True, blank=True)
     payment_time = models.DateTimeField(default=timezone.now)
@@ -627,68 +628,59 @@ class CartItem(models.Model):
         return self.product.price * self.quantity
 
 
-# Payment Model
-class Payment(models.Model):
-    PAYMENT_METHODS = [
-        ('CASH', 'Cash'),
-        ('CARD', 'Credit/Debit Card'),
-        ('ONLINE', 'Online Payment'),
-    ]
-    order = models.OneToOneField(Order, on_delete=models.CASCADE, related_name='payment')
-    amount = models.DecimalField(max_digits=10, decimal_places=2)
-    tax = models.DecimalField(max_digits=10, decimal_places=2, default=0)
-    commission = models.DecimalField(max_digits=10, decimal_places=2, default=0)
-    total_amount = models.DecimalField(max_digits=10, decimal_places=2)
-    payment_method = models.CharField(max_length=50, choices=[
-        ('STRIPE', 'Stripe'),
-        ('DUMMY', 'Dummy Payment'),
-    ])
-    payment_status = models.CharField(max_length=20, choices=[
-        ('PENDING', 'Pending'),
-        ('COMPLETED', 'Completed'),
-        ('FAILED', 'Failed'),
-    ], default='PENDING')
-    created_at = models.DateTimeField(auto_now_add=True)
+   
 
-    def __str__(self):
-        return f"Payment for Order {self.order.id}: {self.total_amount}"
-
-    def calculate_total_amount(self):
-        """Calculate the total amount including tax and commission."""
-        self.total_amount = self.amount + self.tax + self.commission
-        self.save()
-        return self.total_amount
-    
-    def get_method_display_text(self):
-      return self.get_method_display()
-    
-    def get_payment_time(self):
-        return self.payment_time
-
-
-class Role(models.Model):
+class AppModule(models.Model):
     name = models.CharField(max_length=100, unique=True)
-    description = models.TextField(null=True, blank=True)
-    vendor = models.ForeignKey('users.Vendor', on_delete=models.CASCADE, related_name='roles')
+    app_label = models.CharField(max_length=100, help_text="The app label this module belongs to (e.g., 'shared', 'users')")
+    description = models.TextField(blank=True, null=True)
+    is_full_app = models.BooleanField(default=False, help_text="Check if this represents the entire app")
+    permissions = models.ManyToManyField(Permission, related_name='app_modules', blank=True)
 
     def __str__(self):
         return self.name
 
+    def get_permissions(self):
+        if self.is_full_app:
+            return Permission.objects.filter(content_type__app_label=self.app_label)
+        return self.permissions.all()
 
-class RolePermission(models.Model):
-    role = models.ForeignKey(Role, on_delete=models.CASCADE, related_name='permissions')
-    permission = models.ForeignKey(Permission, on_delete=models.CASCADE)
+    class Meta:
+        verbose_name = "App Module"
+        verbose_name_plural = "App Modules"
 
-    def __str__(self):
-        return f"{self.role.name} - {self.permission.name}"
+    
 
 
 class DummyPaymentGateway:
     @staticmethod
     def process_payment(amount):
         """
-        Simulate a payment process.
+        Simulate a payment process for testing purposes.
         Returns True if payment is successful, False otherwise.
         """
-        import random
+        # Simulate a success rate of 90%
         return random.random() < 0.9
+
+    @staticmethod
+    def create_payment_intent(amount):
+        """
+        Simulate creation of a payment intent for testing purposes.
+        """
+        if random.random() < 0.9:  # 90% chance of success
+            return "dummy_client_secret_" + str(random.randint(1000, 9999))
+        return None
+
+    @staticmethod
+    def confirm_payment(payment_intent_id):
+        """
+        Simulate confirmation of a payment for testing purposes.
+        """
+        if random.random() < 0.9:  # 90% chance of success
+            return {"status": "succeeded"}
+        return {"status": "failed"}
+    
+
+
+
+
